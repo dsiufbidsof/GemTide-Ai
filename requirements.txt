@@ -2,3 +2,4 @@ discord.py
 aiohttp
 Pillow
 pytesseract
+python-dotenv
