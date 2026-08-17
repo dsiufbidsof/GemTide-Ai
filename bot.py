@@ -20,7 +20,7 @@ OPENROUTER_API_KEY = "sk-or-v1-b420f383683a4636d0fa49b79a0777f015ec9059ee9c50e5a
 
 # ⚠️ IMPORTANT: Change this to YOUR Discord User ID
 # To find your ID: Enable Developer Mode in Discord Settings → Right-click your name → Copy ID
-OWNER_ID = 1497518702013186141  # REPLACE THIS WITH YOUR ACTUAL USER ID!
+OWNER_ID = 123456789012345678  # REPLACE THIS WITH YOUR ACTUAL USER ID!
 
 # Transcript channel
 TRANSCRIPT_CHANNEL_ID = 1538133090625658912
@@ -30,13 +30,15 @@ PROTECTED_USER_ID = 1497518702013186141
 
 # OpenRouter API (FREE!)
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-# You can change this to any model, but these are good free options:
-# - "openai/gpt-4o" (if you have credits)
-# - "openai/gpt-3.5-turbo" 
-# - "meta-llama/llama-3-70b-instruct" (free)
-# - "mistralai/mistral-7b-instruct" (free)
-# - "google/gemini-flash-1.5" (free)
-OPENROUTER_MODEL = "meta-llama/llama-3-70b-instruct"  # Free model
+
+# ✅ WORKING FREE MODELS ON OPENROUTER:
+# - "openrouter/free" - Auto-picks best free model (RECOMMENDED)
+# - "google/gemini-flash-1.5" - Google's Gemini Flash (fast, good quality)
+# - "mistralai/mistral-7b-instruct" - Mistral 7B (good, fast)
+# - "meta-llama/llama-3-8b-instruct" - Llama 3 8B (good quality)
+# - "microsoft/phi-3-mini-128k-instruct" - Microsoft Phi-3 (small, fast)
+# - "qwen/qwen-2-7b-instruct" - Qwen 2 7B (good quality)
+OPENROUTER_MODEL = "openrouter/free"  # This automatically picks the best free model!
 
 # Prefix isn't really needed, but kept for compatibility.
 PREFIX = "!"
@@ -321,7 +323,7 @@ async def read_screenshot(attachment: discord.Attachment) -> str:
 
 
 # ============================================================
-# OPENROUTER (FREE)
+# OPENROUTER (FREE) - WORKING MODELS
 # ============================================================
 
 async def ask_ai(
@@ -407,6 +409,29 @@ Remember:
                         error_data = json.loads(response_text)
                         error_msg = error_data.get('error', {}).get('message', 'Unknown error')
                         print(f"Error message: {error_msg}")
+                        
+                        # If model not found, try fallback
+                        if "No endpoints found" in error_msg:
+                            print("⚠️ Model not found, trying fallback...")
+                            # Try the free fallback model
+                            fallback_payload = payload.copy()
+                            fallback_payload["model"] = "openrouter/free"
+                            
+                            async with session.post(
+                                OPENROUTER_URL,
+                                headers=headers,
+                                json=fallback_payload
+                            ) as fallback_response:
+                                fallback_text = await fallback_response.text()
+                                
+                                if fallback_response.status == 200:
+                                    try:
+                                        fallback_data = json.loads(fallback_text)
+                                        fallback_choices = fallback_data.get("choices", [])
+                                        if fallback_choices:
+                                            return fallback_choices[0].get("message", {}).get("content", "").strip()
+                                    except:
+                                        pass
                     except:
                         pass
                     
