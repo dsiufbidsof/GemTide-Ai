@@ -33,6 +33,9 @@ DEEPSEEK_MODEL = "deepseek-chat"
 # Prefix isn't really needed, but kept for compatibility.
 PREFIX = "!"
 
+# Port for Render web service
+PORT = int(os.environ.get("PORT", 10000))
+
 # ============================================================
 # IMPORTS
 # ============================================================
@@ -40,7 +43,9 @@ PREFIX = "!"
 import asyncio
 import io
 import re
+import json
 from datetime import datetime, timezone
+import threading
 
 import aiohttp
 import discord
@@ -49,6 +54,32 @@ from discord import app_commands
 
 from PIL import Image
 import pytesseract
+
+# Import for web server
+from flask import Flask, jsonify
+
+
+# ============================================================
+# FLASK WEB SERVER (for Render)
+# ============================================================
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return jsonify({
+        "status": "online",
+        "bot": "GemTide Support Bot",
+        "version": "1.0.0"
+    })
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy"})
+
+def run_web_server():
+    """Run the Flask web server in a separate thread"""
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 
 # ============================================================
@@ -287,8 +318,10 @@ async def ask_deepseek(
 
     system_prompt = build_system_prompt(guild)
 
+    user_content = conversation
+    
     if screenshot_text:
-        conversation += f"""
+        user_content += f"""
 
 OCR TEXT FROM USER SCREENSHOT:
 
@@ -309,7 +342,7 @@ Remember:
             },
             {
                 "role": "user",
-                "content": conversation
+                "content": user_content
             }
         ],
         "temperature": 0.2,
@@ -322,43 +355,78 @@ Remember:
     }
 
     try:
-
-        timeout = aiohttp.ClientTimeout(total=45)
+        timeout = aiohttp.ClientTimeout(total=60)
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
-
             async with session.post(
                 DEEPSEEK_URL,
                 headers=headers,
                 json=payload
             ) as response:
-
-                data = await response.json()
-
+                
+                # Get the response text first
+                response_text = await response.text()
+                
                 if response.status != 200:
-
-                    print("DEEPSEEK ERROR:")
-                    print(data)
-
+                    print(f"DEEPSEEK API ERROR: Status {response.status}")
+                    print(f"Response: {response_text}")
+                    
+                    # Try to parse the error
+                    try:
+                        error_data = json.loads(response_text)
+                        error_msg = error_data.get('error', {}).get('message', 'Unknown error')
+                        print(f"Error message: {error_msg}")
+                    except:
+                        pass
+                    
                     return (
                         "I'm having trouble contacting the AI right now. "
                         "Please wait a moment or ask GemTide staff."
                     )
+                
+                # Parse the JSON response
+                try:
+                    data = json.loads(response_text)
+                except json.JSONDecodeError:
+                    print("Failed to parse DeepSeek response as JSON")
+                    return "I received an invalid response from the AI. Please try again."
 
                 choices = data.get("choices", [])
-
+                
                 if not choices:
+                    print("No choices in DeepSeek response")
                     return (
                         "I couldn't generate an answer right now. "
                         "Please ask GemTide staff."
                     )
 
-                return choices[0]["message"]["content"].strip()
+                # Get the message content
+                message_content = choices[0].get("message", {}).get("content", "")
+                
+                if not message_content:
+                    print("Empty message content in DeepSeek response")
+                    return (
+                        "I couldn't generate an answer right now. "
+                        "Please ask GemTide staff."
+                    )
 
+                return message_content.strip()
+
+    except aiohttp.ClientError as e:
+        print(f"DEEPSEEK CLIENT ERROR: {e}")
+        return (
+            "I'm having network issues contacting the AI. "
+            "Please try again in a moment."
+        )
+    except asyncio.TimeoutError:
+        print("DEEPSEEK TIMEOUT")
+        return (
+            "The AI request timed out. Please try again in a moment."
+        )
     except Exception as e:
-
-        print("DEEPSEEK EXCEPTION:", e)
-
+        print(f"DEEPSEEK EXCEPTION: {e}")
+        import traceback
+        traceback.print_exc()
         return (
             "I couldn't contact the support AI right now. "
             "Please try again in a moment."
@@ -1090,11 +1158,12 @@ async def on_ready():
     print("Bot is ready to use!")
     print(f"Use /sendticketpanel to create the ticket panel")
     print(f"Use !sync to manually sync slash commands if needed")
+    print(f"Web server running on port {PORT}")
     print("--------------------------------------")
 
 
 # ============================================================
-# START BOT
+# START BOT & WEB SERVER
 # ============================================================
 
 if __name__ == "__main__":
@@ -1112,4 +1181,11 @@ if __name__ == "__main__":
         )
 
     print("Starting GemTide Bot...")
+    
+    # Start the Flask web server in a separate thread
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    print(f"✅ Web server started on port {PORT}")
+    
+    # Run the Discord bot
     bot.run(BOT_TOKEN)
