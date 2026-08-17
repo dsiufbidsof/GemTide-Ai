@@ -40,7 +40,7 @@ PREFIX = "!"
 import asyncio
 import io
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 import aiohttp
 import discord
@@ -233,6 +233,18 @@ def get_ticket_owner_id(channel: discord.TextChannel):
     return int(match.group(1))
 
 
+def get_ticket_claimed_by(channel: discord.TextChannel):
+    if not channel.topic:
+        return None
+
+    match = re.search(r"claimed_by=(\d+)", channel.topic)
+
+    if not match:
+        return None
+
+    return int(match.group(1))
+
+
 def clean_filename(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]", "_", name)
 
@@ -405,7 +417,7 @@ async def create_transcript(
     )
 
     transcript_lines.append(
-        f"Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"Created: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
     transcript_lines.append(
@@ -472,7 +484,7 @@ async def send_transcript(channel: discord.TextChannel):
         description=(
             f"Transcript for `{channel.name}`"
         ),
-        timestamp=datetime.utcnow()
+        timestamp=datetime.now(timezone.utc)
     )
 
     owner_id = get_ticket_owner_id(channel)
@@ -481,6 +493,14 @@ async def send_transcript(channel: discord.TextChannel):
         embed.add_field(
             name="Ticket Owner",
             value=f"<@{owner_id}>",
+            inline=False
+        )
+
+    claimed_by = get_ticket_claimed_by(channel)
+    if claimed_by:
+        embed.add_field(
+            name="Claimed By",
+            value=f"<@{claimed_by}>",
             inline=False
         )
 
@@ -494,6 +514,112 @@ async def send_transcript(channel: discord.TextChannel):
         embed=embed,
         file=file
     )
+
+
+# ============================================================
+# TICKET VIEW (Claim/Unclaim Buttons)
+# ============================================================
+
+class TicketView(discord.ui.View):
+    def __init__(self, channel: discord.TextChannel):
+        super().__init__(timeout=None)
+        self.channel = channel
+
+    @discord.ui.button(
+        label="Claim Ticket",
+        style=discord.ButtonStyle.success,
+        emoji="✋",
+        custom_id="claim_ticket"
+    )
+    async def claim_ticket(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        # Check if user is staff (has manage channels permission)
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message(
+                "❌ You don't have permission to claim tickets.",
+                ephemeral=True
+            )
+            return
+
+        # Check if already claimed
+        claimed_by = get_ticket_claimed_by(self.channel)
+        if claimed_by:
+            await interaction.response.send_message(
+                f"❌ This ticket is already claimed by <@{claimed_by}>",
+                ephemeral=True
+            )
+            return
+
+        # Update topic with claim info
+        new_topic = self.channel.topic + f" claimed_by={interaction.user.id}"
+        await self.channel.edit(topic=new_topic)
+
+        # Update button
+        self.children[0].label = "Unclaim Ticket"
+        self.children[0].style = discord.ButtonStyle.danger
+        self.children[0].emoji = "🔓"
+        self.children[0].custom_id = "unclaim_ticket"
+        
+        await interaction.response.edit_message(view=self)
+        
+        # Send confirmation
+        await self.channel.send(
+            f"✅ Ticket claimed by {interaction.user.mention}! AI responses will be paused."
+        )
+
+    @discord.ui.button(
+        label="Unclaim Ticket",
+        style=discord.ButtonStyle.danger,
+        emoji="🔓",
+        custom_id="unclaim_ticket"
+    )
+    async def unclaim_ticket(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        # Check if user is staff
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message(
+                "❌ You don't have permission to unclaim tickets.",
+                ephemeral=True
+            )
+            return
+
+        # Check if this user claimed it
+        claimed_by = get_ticket_claimed_by(self.channel)
+        if claimed_by != interaction.user.id:
+            if claimed_by:
+                await interaction.response.send_message(
+                    f"❌ This ticket is claimed by <@{claimed_by}>. Only they can unclaim it.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ This ticket isn't claimed.",
+                    ephemeral=True
+                )
+            return
+
+        # Remove claim from topic
+        new_topic = re.sub(r" claimed_by=\d+", "", self.channel.topic)
+        await self.channel.edit(topic=new_topic)
+
+        # Update button
+        self.children[0].label = "Claim Ticket"
+        self.children[0].style = discord.ButtonStyle.success
+        self.children[0].emoji = "✋"
+        self.children[0].custom_id = "claim_ticket"
+        
+        await interaction.response.edit_message(view=self)
+        
+        # Send confirmation
+        await self.channel.send(
+            f"🔓 Ticket unclaimed by {interaction.user.mention}! AI responses are now active."
+        )
 
 
 # ============================================================
@@ -520,20 +646,20 @@ class TicketPanel(discord.ui.View):
         guild = interaction.guild
 
         if guild is None:
+            await interaction.response.send_message(
+                "This command can only be used in a server.",
+                ephemeral=True
+            )
             return
 
         # Check if user already has a ticket
         for channel in guild.text_channels:
-
             owner_id = get_ticket_owner_id(channel)
-
             if owner_id == interaction.user.id:
-
                 await interaction.response.send_message(
                     f"You already have a ticket: {channel.mention}",
                     ephemeral=True
                 )
-
                 return
 
         category = discord.utils.find(
@@ -544,41 +670,28 @@ class TicketPanel(discord.ui.View):
         )
 
         if category is None:
-
-            category = await guild.create_category(
-                "Tickets"
-            )
+            category = await guild.create_category("Tickets")
 
         overwrites = {
-
-            guild.default_role:
-                discord.PermissionOverwrite(
-                    view_channel=False
-                ),
-
-            interaction.user:
-                discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True,
-                    attach_files=True
-                ),
-
-            guild.me:
-                discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True,
-                    manage_channels=True,
-                    manage_messages=True
-                )
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_channels=True,
+                manage_messages=True
+            )
         }
 
         # Allow moderators
         for role in guild.roles:
-
             if role.permissions.manage_channels:
-
                 overwrites[role] = discord.PermissionOverwrite(
                     view_channel=True,
                     send_messages=True,
@@ -599,21 +712,22 @@ class TicketPanel(discord.ui.View):
                 f"Welcome {interaction.user.mention}!\n\n"
                 "Please explain what you need help with.\n\n"
                 "You can also upload screenshots if you're "
-                "asking about a SAB/PS99 pet or item."
+                "asking about a SAB/PS99 pet or item.\n\n"
+                "**Ticket Status:** AI Active 🤖"
             ),
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
 
-        embed.set_footer(
-            text="GemTide Support"
-        )
+        embed.set_footer(text="GemTide Support")
 
+        # Send initial message with claim buttons
+        view = TicketView(channel)
+        
         await channel.send(
             content=interaction.user.mention,
             embed=embed,
-            allowed_mentions=discord.AllowedMentions(
-                users=True
-            )
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True)
         )
 
         await interaction.response.send_message(
@@ -639,12 +753,10 @@ async def sendticketpanel(
 ):
 
     if not is_owner(interaction.user):
-
         await interaction.response.send_message(
             "❌ Only the bot owner can use this command.",
             ephemeral=True
         )
-
         return
 
     embed = discord.Embed(
@@ -657,19 +769,16 @@ async def sendticketpanel(
         )
     )
 
-    embed.set_footer(
-        text="GemTide Support System"
-    )
+    embed.set_footer(text="GemTide Support System")
 
-    await channel.send(
-        embed=embed,
-        view=TicketPanel()
-    )
-
+    view = TicketPanel()
+    
     await interaction.response.send_message(
         f"✅ Ticket panel sent to {channel.mention}.",
         ephemeral=True
     )
+    
+    await channel.send(embed=embed, view=view)
 
 
 @bot.tree.command(
@@ -685,12 +794,10 @@ async def rules(
 ):
 
     if not is_owner(interaction.user):
-
         await interaction.response.send_message(
             "❌ Only the bot owner can use this command.",
             ephemeral=True
         )
-
         return
 
     embed = discord.Embed(
@@ -698,16 +805,14 @@ async def rules(
         description=GEMTIDE_RULES
     )
 
-    embed.set_footer(
-        text="GemTide • Please follow Discord ToS and server rules."
-    )
-
-    await channel.send(embed=embed)
+    embed.set_footer(text="GemTide • Please follow Discord ToS and server rules.")
 
     await interaction.response.send_message(
         f"✅ GemTide rules sent to {channel.mention}.",
         ephemeral=True
     )
+    
+    await channel.send(embed=embed)
 
 
 # ============================================================
@@ -727,7 +832,6 @@ async def close_ticket(
     owner = channel.guild.get_member(owner_id)
 
     if owner:
-
         await channel.set_permissions(
             owner,
             view_channel=False,
@@ -741,15 +845,11 @@ async def close_ticket(
         description=(
             f"This ticket was closed by {closed_by.mention}.\n\n"
             "A transcript has been saved."
-        )
+        ),
+        timestamp=datetime.now(timezone.utc)
     )
 
-    await channel.send(
-        embed=embed,
-        allowed_mentions=discord.AllowedMentions(
-            users=True
-        )
-    )
+    await channel.send(embed=embed)
 
     return True
 
@@ -772,13 +872,12 @@ async def delete_ticket(
 
 
 # ============================================================
-# MANUAL SYNC COMMANDS (PREFIX) - FIXED
+# MANUAL SYNC COMMANDS (PREFIX)
 # ============================================================
 
 @bot.command(name="sync")
 async def sync_global(ctx):
     """Sync slash commands globally (owner only)"""
-    # Check if user is owner
     if ctx.author.id != OWNER_ID:
         await ctx.send("❌ Only the bot owner can use this command.")
         return
@@ -794,7 +893,6 @@ async def sync_global(ctx):
 @bot.command(name="syncg")
 async def sync_guild(ctx):
     """Sync slash commands to current guild only (owner only)"""
-    # Check if user is owner
     if ctx.author.id != OWNER_ID:
         await ctx.send("❌ Only the bot owner can use this command.")
         return
@@ -808,23 +906,6 @@ async def sync_guild(ctx):
     except Exception as e:
         await ctx.send(f"❌ Error syncing commands: {e}")
         print(f"Sync error: {e}")
-
-@bot.command(name="clearsync")
-async def clear_sync(ctx):
-    """Clear all slash commands in this guild (owner only)"""
-    # Check if user is owner
-    if ctx.author.id != OWNER_ID:
-        await ctx.send("❌ Only the bot owner can use this command.")
-        return
-    
-    try:
-        await bot.tree.clear_commands(guild=ctx.guild)
-        await bot.tree.sync(guild=ctx.guild)
-        await ctx.send("✅ Cleared all slash commands in this guild!")
-        print(f"Cleared slash commands in guild: {ctx.guild.name}")
-    except Exception as e:
-        await ctx.send(f"❌ Error clearing commands: {e}")
-        print(f"Clear sync error: {e}")
 
 
 # ============================================================
@@ -852,11 +933,8 @@ async def on_message(message: discord.Message):
         await message.reply(
             "Please don't ping that user again. "
             "Please use the appropriate support channels instead.",
-            allowed_mentions=discord.AllowedMentions(
-                users=False
-            )
+            allowed_mentions=discord.AllowedMentions(users=False)
         )
-
         return
 
     # ========================================================
@@ -865,37 +943,22 @@ async def on_message(message: discord.Message):
 
     lowered = message.content.lower().strip()
 
-    if lowered in {
-        "hi",
-        "hey",
-        "hello",
-        "yo",
-        "hiya"
-    }:
-
+    if lowered in {"hi", "hey", "hello", "yo", "hiya"}:
         await message.reply(
             "Yo! 👋",
-            allowed_mentions=discord.AllowedMentions(
-                users=False
-            )
+            allowed_mentions=discord.AllowedMentions(users=False)
         )
-
         return
 
     # ========================================================
     # ONLY HANDLE TICKETS
     # ========================================================
 
-    if not isinstance(
-        message.channel,
-        discord.TextChannel
-    ):
+    if not isinstance(message.channel, discord.TextChannel):
         return
 
     if not is_ticket(message.channel):
-
         await bot.process_commands(message)
-
         return
 
     # ========================================================
@@ -903,12 +966,7 @@ async def on_message(message: discord.Message):
     # ========================================================
 
     if lowered == "close":
-
-        await close_ticket(
-            message.channel,
-            message.author
-        )
-
+        await close_ticket(message.channel, message.author)
         return
 
     # ========================================================
@@ -916,19 +974,20 @@ async def on_message(message: discord.Message):
     # ========================================================
 
     if lowered == "delete":
-
         if not is_owner(message.author):
-
-            await message.reply(
-                "❌ Only the bot owner can delete tickets."
-            )
-
+            await message.reply("❌ Only the bot owner can delete tickets.")
             return
+        await delete_ticket(message.channel)
+        return
 
-        await delete_ticket(
-            message.channel
-        )
+    # ========================================================
+    # CHECK IF TICKET IS CLAIMED (AI OFF)
+    # ========================================================
 
+    claimed_by = get_ticket_claimed_by(message.channel)
+    if claimed_by:
+        # Ticket is claimed, AI is paused - don't respond with AI
+        await bot.process_commands(message)
         return
 
     # ========================================================
@@ -936,58 +995,33 @@ async def on_message(message: discord.Message):
     # ========================================================
 
     screenshot_text = ""
-
     image_attachments = []
 
     for attachment in message.attachments:
-
         content_type = attachment.content_type or ""
-
         if (
             content_type.startswith("image/")
             or attachment.filename.lower().endswith(
-                (
-                    ".png",
-                    ".jpg",
-                    ".jpeg",
-                    ".webp",
-                    ".bmp"
-                )
+                (".png", ".jpg", ".jpeg", ".webp", ".bmp")
             )
         ):
-
             image_attachments.append(attachment)
 
     if image_attachments:
-
-        await message.channel.send(
-            "🔎 I'm reading the screenshot now..."
-        )
+        await message.channel.send("🔎 I'm reading the screenshot now...")
 
         for attachment in image_attachments:
-
-            text = await read_screenshot(
-                attachment
-            )
-
+            text = await read_screenshot(attachment)
             if text:
-
-                screenshot_text += (
-                    f"\n\n--- {attachment.filename} ---\n"
-                    f"{text}"
-                )
+                screenshot_text += f"\n\n--- {attachment.filename} ---\n{text}"
 
     # ========================================================
     # GET CONTEXT
     # ========================================================
 
-    history = await get_ticket_history(
-        message.channel,
-        limit=30
-    )
+    history = await get_ticket_history(message.channel, limit=30)
 
     if len(history) > 10000:
-
         history = history[-10000:]
 
     # ========================================================
@@ -995,7 +1029,6 @@ async def on_message(message: discord.Message):
     # ========================================================
 
     async with message.channel.typing():
-
         answer = await ask_deepseek(
             message.guild,
             history,
@@ -1004,7 +1037,6 @@ async def on_message(message: discord.Message):
 
     # Discord message limit
     if len(answer) > 1900:
-
         answer = answer[:1890] + "..."
 
     await message.channel.send(
@@ -1034,7 +1066,7 @@ async def on_ready():
     print(f"Owner ID set to: {OWNER_ID}")
     print("--------------------------------------")
 
-    # Persistent ticket button
+    # Persistent ticket panel
     bot.add_view(TicketPanel())
 
     try:
@@ -1078,12 +1110,6 @@ if __name__ == "__main__":
             "DEEPSEEK_API_KEY not found in environment variables. "
             "Please create a .env file with your DeepSeek API key."
         )
-
-    if OWNER_ID == 123456789012345678:
-        print("⚠️ WARNING: You haven't set your OWNER_ID yet!")
-        print("Please change the OWNER_ID variable to your Discord User ID.")
-        print("To find your ID: Enable Developer Mode → Right-click your name → Copy ID")
-        print("The bot will still work, but only YOU can use owner commands.\n")
 
     print("Starting GemTide Bot...")
     bot.run(BOT_TOKEN)
