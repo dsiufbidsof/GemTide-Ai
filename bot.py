@@ -18,7 +18,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 # ⚠️ IMPORTANT: Change this to YOUR Discord User ID
 # To find your ID: Enable Developer Mode in Discord Settings → Right-click your name → Copy ID
-OWNER_ID = YOUR_DISCORD_USER_ID_HERE  # REPLACE THIS WITH YOUR ACTUAL USER ID!
+OWNER_ID = 1497518702013186141  # REPLACE THIS WITH YOUR ACTUAL USER ID!
 
 # Transcript channel
 TRANSCRIPT_CHANNEL_ID = 1538133090625658912
