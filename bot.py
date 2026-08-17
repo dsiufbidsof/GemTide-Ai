@@ -16,8 +16,9 @@ load_dotenv()
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# Your Discord user ID
-OWNER_ID = 123456789012345678
+# ⚠️ IMPORTANT: Change this to YOUR Discord User ID
+# To find your ID: Enable Developer Mode in Discord Settings → Right-click your name → Copy ID
+OWNER_ID = YOUR_DISCORD_USER_ID_HERE  # REPLACE THIS WITH YOUR ACTUAL USER ID!
 
 # Transcript channel
 TRANSCRIPT_CHANNEL_ID = 1538133090625658912
@@ -771,13 +772,17 @@ async def delete_ticket(
 
 
 # ============================================================
-# MANUAL SYNC COMMANDS (PREFIX)
+# MANUAL SYNC COMMANDS (PREFIX) - FIXED
 # ============================================================
 
 @bot.command(name="sync")
-@commands.is_owner()
 async def sync_global(ctx):
-    """Sync slash commands globally"""
+    """Sync slash commands globally (owner only)"""
+    # Check if user is owner
+    if ctx.author.id != OWNER_ID:
+        await ctx.send("❌ Only the bot owner can use this command.")
+        return
+    
     try:
         synced = await bot.tree.sync()
         await ctx.send(f"✅ Synced {len(synced)} slash commands globally!")
@@ -787,9 +792,13 @@ async def sync_global(ctx):
         print(f"Sync error: {e}")
 
 @bot.command(name="syncg")
-@commands.is_owner()
 async def sync_guild(ctx):
-    """Sync slash commands to current guild only"""
+    """Sync slash commands to current guild only (owner only)"""
+    # Check if user is owner
+    if ctx.author.id != OWNER_ID:
+        await ctx.send("❌ Only the bot owner can use this command.")
+        return
+    
     try:
         guild = ctx.guild
         bot.tree.copy_global_to(guild=guild)
@@ -801,9 +810,13 @@ async def sync_guild(ctx):
         print(f"Sync error: {e}")
 
 @bot.command(name="clearsync")
-@commands.is_owner()
 async def clear_sync(ctx):
-    """Clear all slash commands (use with caution)"""
+    """Clear all slash commands in this guild (owner only)"""
+    # Check if user is owner
+    if ctx.author.id != OWNER_ID:
+        await ctx.send("❌ Only the bot owner can use this command.")
+        return
+    
     try:
         await bot.tree.clear_commands(guild=ctx.guild)
         await bot.tree.sync(guild=ctx.guild)
@@ -1018,6 +1031,7 @@ async def on_ready():
     print(f"Logged in as: {bot.user}")
     print(f"Bot ID: {bot.user.id}")
     print(f"Connected to {len(bot.guilds)} guilds")
+    print(f"Owner ID set to: {OWNER_ID}")
     print("--------------------------------------")
 
     # Persistent ticket button
@@ -1064,6 +1078,12 @@ if __name__ == "__main__":
             "DEEPSEEK_API_KEY not found in environment variables. "
             "Please create a .env file with your DeepSeek API key."
         )
+
+    if OWNER_ID == 123456789012345678:
+        print("⚠️ WARNING: You haven't set your OWNER_ID yet!")
+        print("Please change the OWNER_ID variable to your Discord User ID.")
+        print("To find your ID: Enable Developer Mode → Right-click your name → Copy ID")
+        print("The bot will still work, but only YOU can use owner commands.\n")
 
     print("Starting GemTide Bot...")
     bot.run(BOT_TOKEN)
