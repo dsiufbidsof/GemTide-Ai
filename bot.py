@@ -1,6 +1,6 @@
 # ============================================================
 # GEMTIDE SUPPORT / TICKET BOT
-# Python + discord.py + DeepSeek
+# Python + discord.py + OpenRouter (FREE)
 # ============================================================
 
 # =========================
@@ -14,7 +14,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
+# Your OpenRouter API Key (FREE)
+OPENROUTER_API_KEY = "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"
 
 # ⚠️ IMPORTANT: Change this to YOUR Discord User ID
 # To find your ID: Enable Developer Mode in Discord Settings → Right-click your name → Copy ID
@@ -26,9 +28,15 @@ TRANSCRIPT_CHANNEL_ID = 1538133090625658912
 # User who should not be pinged
 PROTECTED_USER_ID = 1497518702013186141
 
-# DeepSeek API
-DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
+# OpenRouter API (FREE!)
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# You can change this to any model, but these are good free options:
+# - "openai/gpt-4o" (if you have credits)
+# - "openai/gpt-3.5-turbo" 
+# - "meta-llama/llama-3-70b-instruct" (free)
+# - "mistralai/mistral-7b-instruct" (free)
+# - "google/gemini-flash-1.5" (free)
+OPENROUTER_MODEL = "meta-llama/llama-3-70b-instruct"  # Free model
 
 # Prefix isn't really needed, but kept for compatibility.
 PREFIX = "!"
@@ -46,6 +54,8 @@ import re
 import json
 from datetime import datetime, timezone
 import threading
+import traceback
+import time
 
 import aiohttp
 import discord
@@ -70,12 +80,16 @@ def home():
     return jsonify({
         "status": "online",
         "bot": "GemTide Support Bot",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "uptime": time.time() - start_time if 'start_time' in globals() else 0
     })
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "healthy"})
+    return jsonify({
+        "status": "healthy",
+        "bot_connected": bot.is_ready() if 'bot' in globals() else False
+    })
 
 def run_web_server():
     """Run the Flask web server in a separate thread"""
@@ -157,7 +171,7 @@ By remaining in GemTide, you agree to these rules.
 
 
 # ============================================================
-# DEEPSEEK SYSTEM PROMPT
+# SYSTEM PROMPT
 # ============================================================
 
 def build_system_prompt(guild: discord.Guild | None) -> str:
@@ -307,17 +321,26 @@ async def read_screenshot(attachment: discord.Attachment) -> str:
 
 
 # ============================================================
-# DEEPSEEK
+# OPENROUTER (FREE)
 # ============================================================
 
-async def ask_deepseek(
+async def ask_ai(
     guild: discord.Guild | None,
     conversation: str,
     screenshot_text: str = ""
 ) -> str:
 
+    if not OPENROUTER_API_KEY:
+        print("❌ OPENROUTER_API_KEY is not set!")
+        return (
+            "❌ The OpenRouter API key is not configured. "
+            "Please ask the bot owner to set it up.\n\n"
+            "Get a free key at: https://openrouter.ai"
+        )
+
     system_prompt = build_system_prompt(guild)
 
+    # Build the user message
     user_content = conversation
     
     if screenshot_text:
@@ -333,8 +356,13 @@ Remember:
 - Never invent a mutation.
 """
 
+    # Truncate if too long
+    if len(user_content) > 8000:
+        user_content = user_content[-8000:]
+        print("⚠️ Truncated conversation to 8000 characters")
+
     payload = {
-        "model": DEEPSEEK_MODEL,
+        "model": OPENROUTER_MODEL,
         "messages": [
             {
                 "role": "system",
@@ -350,28 +378,31 @@ Remember:
     }
 
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/your-repo",
+        "X-Title": "GemTide Support Bot"
     }
 
+    print(f"🤖 Sending request to OpenRouter...")
+    print(f"Model: {OPENROUTER_MODEL}")
+
     try:
-        timeout = aiohttp.ClientTimeout(total=60)
+        timeout = aiohttp.ClientTimeout(total=45)
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                DEEPSEEK_URL,
+                OPENROUTER_URL,
                 headers=headers,
                 json=payload
             ) as response:
                 
-                # Get the response text first
                 response_text = await response.text()
                 
                 if response.status != 200:
-                    print(f"DEEPSEEK API ERROR: Status {response.status}")
-                    print(f"Response: {response_text}")
+                    print(f"OPENROUTER API ERROR: Status {response.status}")
+                    print(f"Response: {response_text[:500]}")
                     
-                    # Try to parse the error
                     try:
                         error_data = json.loads(response_text)
                         error_msg = error_data.get('error', {}).get('message', 'Unknown error')
@@ -384,48 +415,46 @@ Remember:
                         "Please wait a moment or ask GemTide staff."
                     )
                 
-                # Parse the JSON response
                 try:
                     data = json.loads(response_text)
                 except json.JSONDecodeError:
-                    print("Failed to parse DeepSeek response as JSON")
+                    print("Failed to parse OpenRouter response as JSON")
                     return "I received an invalid response from the AI. Please try again."
 
                 choices = data.get("choices", [])
                 
                 if not choices:
-                    print("No choices in DeepSeek response")
+                    print("No choices in OpenRouter response")
                     return (
                         "I couldn't generate an answer right now. "
                         "Please ask GemTide staff."
                     )
 
-                # Get the message content
                 message_content = choices[0].get("message", {}).get("content", "")
                 
                 if not message_content:
-                    print("Empty message content in DeepSeek response")
+                    print("Empty message content in OpenRouter response")
                     return (
                         "I couldn't generate an answer right now. "
                         "Please ask GemTide staff."
                     )
 
+                print("✅ OpenRouter response received!")
                 return message_content.strip()
 
     except aiohttp.ClientError as e:
-        print(f"DEEPSEEK CLIENT ERROR: {e}")
+        print(f"OPENROUTER CLIENT ERROR: {e}")
         return (
             "I'm having network issues contacting the AI. "
             "Please try again in a moment."
         )
     except asyncio.TimeoutError:
-        print("DEEPSEEK TIMEOUT")
+        print("OPENROUTER TIMEOUT")
         return (
             "The AI request timed out. Please try again in a moment."
         )
     except Exception as e:
-        print(f"DEEPSEEK EXCEPTION: {e}")
-        import traceback
+        print(f"OPENROUTER EXCEPTION: {e}")
         traceback.print_exc()
         return (
             "I couldn't contact the support AI right now. "
@@ -604,7 +633,6 @@ class TicketView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-        # Check if user is staff (has manage channels permission)
         if not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message(
                 "❌ You don't have permission to claim tickets.",
@@ -612,7 +640,6 @@ class TicketView(discord.ui.View):
             )
             return
 
-        # Check if already claimed
         claimed_by = get_ticket_claimed_by(self.channel)
         if claimed_by:
             await interaction.response.send_message(
@@ -621,11 +648,9 @@ class TicketView(discord.ui.View):
             )
             return
 
-        # Update topic with claim info
         new_topic = self.channel.topic + f" claimed_by={interaction.user.id}"
         await self.channel.edit(topic=new_topic)
 
-        # Update button
         self.children[0].label = "Unclaim Ticket"
         self.children[0].style = discord.ButtonStyle.danger
         self.children[0].emoji = "🔓"
@@ -633,7 +658,6 @@ class TicketView(discord.ui.View):
         
         await interaction.response.edit_message(view=self)
         
-        # Send confirmation
         await self.channel.send(
             f"✅ Ticket claimed by {interaction.user.mention}! AI responses will be paused."
         )
@@ -649,7 +673,6 @@ class TicketView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-        # Check if user is staff
         if not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message(
                 "❌ You don't have permission to unclaim tickets.",
@@ -657,7 +680,6 @@ class TicketView(discord.ui.View):
             )
             return
 
-        # Check if this user claimed it
         claimed_by = get_ticket_claimed_by(self.channel)
         if claimed_by != interaction.user.id:
             if claimed_by:
@@ -672,11 +694,9 @@ class TicketView(discord.ui.View):
                 )
             return
 
-        # Remove claim from topic
         new_topic = re.sub(r" claimed_by=\d+", "", self.channel.topic)
         await self.channel.edit(topic=new_topic)
 
-        # Update button
         self.children[0].label = "Claim Ticket"
         self.children[0].style = discord.ButtonStyle.success
         self.children[0].emoji = "✋"
@@ -684,7 +704,6 @@ class TicketView(discord.ui.View):
         
         await interaction.response.edit_message(view=self)
         
-        # Send confirmation
         await self.channel.send(
             f"🔓 Ticket unclaimed by {interaction.user.mention}! AI responses are now active."
         )
@@ -720,7 +739,6 @@ class TicketPanel(discord.ui.View):
             )
             return
 
-        # Check if user already has a ticket
         for channel in guild.text_channels:
             owner_id = get_ticket_owner_id(channel)
             if owner_id == interaction.user.id:
@@ -757,7 +775,6 @@ class TicketPanel(discord.ui.View):
             )
         }
 
-        # Allow moderators
         for role in guild.roles:
             if role.permissions.manage_channels:
                 overwrites[role] = discord.PermissionOverwrite(
@@ -788,7 +805,6 @@ class TicketPanel(discord.ui.View):
 
         embed.set_footer(text="GemTide Support")
 
-        # Send initial message with claim buttons
         view = TicketView(channel)
         
         await channel.send(
@@ -883,6 +899,77 @@ async def rules(
     await channel.send(embed=embed)
 
 
+@bot.tree.command(
+    name="testai",
+    description="Test the OpenRouter AI connection."
+)
+async def testai(
+    interaction: discord.Interaction
+):
+    """Test if OpenRouter API is working"""
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        payload = {
+            "model": OPENROUTER_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a test assistant. Respond briefly."
+                },
+                {
+                    "role": "user",
+                    "content": "Please respond with exactly: AI is working! 🎉"
+                }
+            ],
+            "temperature": 0.1,
+            "max_tokens": 50
+        }
+
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "GemTide Support Bot"
+        }
+
+        timeout = aiohttp.ClientTimeout(total=15)
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                OPENROUTER_URL,
+                headers=headers,
+                json=payload
+            ) as response:
+                
+                if response.status != 200:
+                    error_text = await response.text()
+                    await interaction.followup.send(
+                        f"❌ OpenRouter API returned error {response.status}:\n```\n{error_text[:500]}\n```"
+                    )
+                    return
+                
+                data = await response.json()
+                choices = data.get("choices", [])
+                
+                if choices:
+                    content = choices[0].get("message", {}).get("content", "No response")
+                    await interaction.followup.send(
+                        f"✅ **OpenRouter AI is working!**\n\n"
+                        f"**Response:** {content}\n\n"
+                        f"**Model:** {OPENROUTER_MODEL}"
+                    )
+                else:
+                    await interaction.followup.send(
+                        "❌ OpenRouter API returned no choices."
+                    )
+                    
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Error testing OpenRouter API:\n```\n{traceback.format_exc()[:500]}\n```"
+        )
+
+
 # ============================================================
 # CLOSE TICKET
 # ============================================================
@@ -945,7 +1032,6 @@ async def delete_ticket(
 
 @bot.command(name="sync")
 async def sync_global(ctx):
-    """Sync slash commands globally (owner only)"""
     if ctx.author.id != OWNER_ID:
         await ctx.send("❌ Only the bot owner can use this command.")
         return
@@ -953,14 +1039,12 @@ async def sync_global(ctx):
     try:
         synced = await bot.tree.sync()
         await ctx.send(f"✅ Synced {len(synced)} slash commands globally!")
-        print(f"Manually synced {len(synced)} commands globally")
     except Exception as e:
         await ctx.send(f"❌ Error syncing commands: {e}")
-        print(f"Sync error: {e}")
+
 
 @bot.command(name="syncg")
 async def sync_guild(ctx):
-    """Sync slash commands to current guild only (owner only)"""
     if ctx.author.id != OWNER_ID:
         await ctx.send("❌ Only the bot owner can use this command.")
         return
@@ -970,10 +1054,18 @@ async def sync_guild(ctx):
         bot.tree.copy_global_to(guild=guild)
         synced = await bot.tree.sync(guild=guild)
         await ctx.send(f"✅ Synced {len(synced)} commands to this guild!")
-        print(f"Manually synced {len(synced)} commands to guild: {guild.name}")
     except Exception as e:
         await ctx.send(f"❌ Error syncing commands: {e}")
-        print(f"Sync error: {e}")
+
+
+# ============================================================
+# KEEP ALIVE FUNCTION
+# ============================================================
+
+async def keep_alive():
+    while True:
+        await asyncio.sleep(300)
+        print(f"⏰ Keep-alive ping at {datetime.now(timezone.utc)}")
 
 
 # ============================================================
@@ -986,41 +1078,21 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # ========================================================
-    # PROTECTED USER PING
-    # ========================================================
-
     if (
         message.mentions
-        and any(
-            user.id == PROTECTED_USER_ID
-            for user in message.mentions
-        )
+        and any(user.id == PROTECTED_USER_ID for user in message.mentions)
     ):
-
         await message.reply(
-            "Please don't ping that user again. "
-            "Please use the appropriate support channels instead.",
+            "Please don't ping that user again.",
             allowed_mentions=discord.AllowedMentions(users=False)
         )
         return
-
-    # ========================================================
-    # NORMAL GREETINGS
-    # ========================================================
 
     lowered = message.content.lower().strip()
 
     if lowered in {"hi", "hey", "hello", "yo", "hiya"}:
-        await message.reply(
-            "Yo! 👋",
-            allowed_mentions=discord.AllowedMentions(users=False)
-        )
+        await message.reply("Yo! 👋", allowed_mentions=discord.AllowedMentions(users=False))
         return
-
-    # ========================================================
-    # ONLY HANDLE TICKETS
-    # ========================================================
 
     if not isinstance(message.channel, discord.TextChannel):
         return
@@ -1029,17 +1101,9 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    # ========================================================
-    # CLOSE
-    # ========================================================
-
     if lowered == "close":
         await close_ticket(message.channel, message.author)
         return
-
-    # ========================================================
-    # DELETE
-    # ========================================================
 
     if lowered == "delete":
         if not is_owner(message.author):
@@ -1048,72 +1112,40 @@ async def on_message(message: discord.Message):
         await delete_ticket(message.channel)
         return
 
-    # ========================================================
-    # CHECK IF TICKET IS CLAIMED (AI OFF)
-    # ========================================================
-
     claimed_by = get_ticket_claimed_by(message.channel)
     if claimed_by:
-        # Ticket is claimed, AI is paused - don't respond with AI
         await bot.process_commands(message)
         return
-
-    # ========================================================
-    # SCREENSHOT / IMAGE OCR
-    # ========================================================
 
     screenshot_text = ""
     image_attachments = []
 
     for attachment in message.attachments:
         content_type = attachment.content_type or ""
-        if (
-            content_type.startswith("image/")
-            or attachment.filename.lower().endswith(
-                (".png", ".jpg", ".jpeg", ".webp", ".bmp")
-            )
-        ):
+        if (content_type.startswith("image/") or 
+            attachment.filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp"))):
             image_attachments.append(attachment)
 
     if image_attachments:
         await message.channel.send("🔎 I'm reading the screenshot now...")
-
         for attachment in image_attachments:
             text = await read_screenshot(attachment)
             if text:
                 screenshot_text += f"\n\n--- {attachment.filename} ---\n{text}"
 
-    # ========================================================
-    # GET CONTEXT
-    # ========================================================
-
     history = await get_ticket_history(message.channel, limit=30)
-
-    if len(history) > 10000:
-        history = history[-10000:]
-
-    # ========================================================
-    # AI REQUEST
-    # ========================================================
+    if len(history) > 8000:
+        history = history[-8000:]
 
     async with message.channel.typing():
-        answer = await ask_deepseek(
-            message.guild,
-            history,
-            screenshot_text
-        )
+        answer = await ask_ai(message.guild, history, screenshot_text)
 
-    # Discord message limit
     if len(answer) > 1900:
         answer = answer[:1890] + "..."
 
     await message.channel.send(
         answer,
-        allowed_mentions=discord.AllowedMentions(
-            users=False,
-            roles=False,
-            everyone=False
-        )
+        allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False)
     )
 
     await bot.process_commands(message)
@@ -1132,34 +1164,38 @@ async def on_ready():
     print(f"Bot ID: {bot.user.id}")
     print(f"Connected to {len(bot.guilds)} guilds")
     print(f"Owner ID set to: {OWNER_ID}")
+    print(f"Using OpenRouter with model: {OPENROUTER_MODEL}")
     print("--------------------------------------")
 
-    # Persistent ticket panel
     bot.add_view(TicketPanel())
 
     try:
-        # Try syncing slash commands globally
         synced = await bot.tree.sync()
         print(f"✅ Synced {len(synced)} slash commands globally.")
-        
-        # Also sync to each guild for redundancy
         for guild in bot.guilds:
             try:
                 await bot.tree.sync(guild=guild)
-                print(f"✅ Synced commands to guild: {guild.name} ({guild.id})")
+                print(f"✅ Synced commands to guild: {guild.name}")
             except Exception as e:
                 print(f"⚠️ Could not sync to guild {guild.name}: {e}")
-                
     except Exception as e:
         print("❌ Slash command sync error:", e)
-        print("⚠️ You may need to use !sync command manually")
+
+    asyncio.create_task(keep_alive())
 
     print("--------------------------------------")
     print("Bot is ready to use!")
     print(f"Use /sendticketpanel to create the ticket panel")
-    print(f"Use !sync to manually sync slash commands if needed")
+    print(f"Use /testai to test the AI connection")
+    print(f"Use !sync to manually sync slash commands")
     print(f"Web server running on port {PORT}")
     print("--------------------------------------")
+
+
+@bot.event
+async def on_error(event, *args, **kwargs):
+    print(f"ERROR in {event}:")
+    traceback.print_exc()
 
 
 # ============================================================
@@ -1169,23 +1205,19 @@ async def on_ready():
 if __name__ == "__main__":
 
     if not BOT_TOKEN:
-        raise RuntimeError(
-            "DISCORD_BOT_TOKEN not found in environment variables. "
-            "Please create a .env file with your bot token."
-        )
+        raise RuntimeError("DISCORD_BOT_TOKEN not found!")
 
-    if not DEEPSEEK_API_KEY:
-        raise RuntimeError(
-            "DEEPSEEK_API_KEY not found in environment variables. "
-            "Please create a .env file with your DeepSeek API key."
-        )
+    start_time = time.time()
+    globals()['start_time'] = start_time
 
     print("Starting GemTide Bot...")
     
-    # Start the Flask web server in a separate thread
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
     print(f"✅ Web server started on port {PORT}")
     
-    # Run the Discord bot
-    bot.run(BOT_TOKEN)
+    try:
+        bot.run(BOT_TOKEN)
+    except Exception as e:
+        print(f"❌ Bot crashed: {e}")
+        traceback.print_exc()
