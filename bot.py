@@ -622,7 +622,7 @@ class TicketPanel(discord.ui.View):
 
 
 # ============================================================
-# SEND TICKET PANEL
+# SLASH COMMANDS
 # ============================================================
 
 @bot.tree.command(
@@ -670,10 +670,6 @@ async def sendticketpanel(
         ephemeral=True
     )
 
-
-# ============================================================
-# RULES COMMAND
-# ============================================================
 
 @bot.tree.command(
     name="rules",
@@ -772,6 +768,50 @@ async def delete_ticket(
     await channel.delete(
         reason="GemTide ticket deleted by owner"
     )
+
+
+# ============================================================
+# MANUAL SYNC COMMANDS (PREFIX)
+# ============================================================
+
+@bot.command(name="sync")
+@commands.is_owner()
+async def sync_global(ctx):
+    """Sync slash commands globally"""
+    try:
+        synced = await bot.tree.sync()
+        await ctx.send(f"✅ Synced {len(synced)} slash commands globally!")
+        print(f"Manually synced {len(synced)} commands globally")
+    except Exception as e:
+        await ctx.send(f"❌ Error syncing commands: {e}")
+        print(f"Sync error: {e}")
+
+@bot.command(name="syncg")
+@commands.is_owner()
+async def sync_guild(ctx):
+    """Sync slash commands to current guild only"""
+    try:
+        guild = ctx.guild
+        bot.tree.copy_global_to(guild=guild)
+        synced = await bot.tree.sync(guild=guild)
+        await ctx.send(f"✅ Synced {len(synced)} commands to this guild!")
+        print(f"Manually synced {len(synced)} commands to guild: {guild.name}")
+    except Exception as e:
+        await ctx.send(f"❌ Error syncing commands: {e}")
+        print(f"Sync error: {e}")
+
+@bot.command(name="clearsync")
+@commands.is_owner()
+async def clear_sync(ctx):
+    """Clear all slash commands (use with caution)"""
+    try:
+        await bot.tree.clear_commands(guild=ctx.guild)
+        await bot.tree.sync(guild=ctx.guild)
+        await ctx.send("✅ Cleared all slash commands in this guild!")
+        print(f"Cleared slash commands in guild: {ctx.guild.name}")
+    except Exception as e:
+        await ctx.send(f"❌ Error clearing commands: {e}")
+        print(f"Clear sync error: {e}")
 
 
 # ============================================================
@@ -977,25 +1017,34 @@ async def on_ready():
     print("GemTide Bot is online!")
     print(f"Logged in as: {bot.user}")
     print(f"Bot ID: {bot.user.id}")
+    print(f"Connected to {len(bot.guilds)} guilds")
     print("--------------------------------------")
 
     # Persistent ticket button
     bot.add_view(TicketPanel())
 
     try:
-
+        # Try syncing slash commands globally
         synced = await bot.tree.sync()
-
-        print(
-            f"Synced {len(synced)} slash commands."
-        )
-
+        print(f"✅ Synced {len(synced)} slash commands globally.")
+        
+        # Also sync to each guild for redundancy
+        for guild in bot.guilds:
+            try:
+                await bot.tree.sync(guild=guild)
+                print(f"✅ Synced commands to guild: {guild.name} ({guild.id})")
+            except Exception as e:
+                print(f"⚠️ Could not sync to guild {guild.name}: {e}")
+                
     except Exception as e:
+        print("❌ Slash command sync error:", e)
+        print("⚠️ You may need to use !sync command manually")
 
-        print(
-            "Slash command sync error:",
-            e
-        )
+    print("--------------------------------------")
+    print("Bot is ready to use!")
+    print(f"Use /sendticketpanel to create the ticket panel")
+    print(f"Use !sync to manually sync slash commands if needed")
+    print("--------------------------------------")
 
 
 # ============================================================
@@ -1016,4 +1065,5 @@ if __name__ == "__main__":
             "Please create a .env file with your DeepSeek API key."
         )
 
+    print("Starting GemTide Bot...")
     bot.run(BOT_TOKEN)
